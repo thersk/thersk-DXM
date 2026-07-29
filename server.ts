@@ -8,7 +8,7 @@ import nodemailer from "nodemailer";
 import admin from "firebase-admin";
 import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
 import { initializeApp as initializeClientApp } from "firebase/app";
-import { getFirestore as getClientFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, deleteDoc, Timestamp } from "firebase/firestore";
+import { getFirestore as getClientFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, orderBy, limit, getDocs, Timestamp } from "firebase/firestore";
 import fs from "fs";
 import { execFile } from "child_process";
 
@@ -27,27 +27,61 @@ try {
   console.warn("[Firebase Admin] Initialization failed. Admin features like password reset via OTP may not work without a service account.", error);
 }
 
-// Initialize Firebase Firestore with Admin SDK (to bypass rules & prevent permissions errors) and fallback to Client SDK if needed
+// Initialize Firebase Firestore with Client SDK as primary for correct database target, with Admin SDK fallback
+let clientDb: any = null;
+let adminDb: any = null;
 let db: any = null;
 
-// Safe Firestore Helpers to support both Admin SDK and Client SDK automatically
+try {
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(configPath)) {
+    const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const databaseId = firebaseConfig.firestoreDatabaseId;
+    
+    // Always initialize Client SDK Firestore (uses web API key & project configuration)
+    try {
+      const clientApp = initializeClientApp(firebaseConfig);
+      clientDb = getClientFirestore(clientApp, databaseId);
+      db = clientDb; // Use clientDb as primary database
+      console.log(`[Firebase Client] Initialized successfully with database ID: ${databaseId}`);
+    } catch (clientErr) {
+      console.warn("[Firebase Client] Initialization failed:", clientErr);
+    }
+
+    // Initialize Admin SDK Firestore if available
+    try {
+      const adminApp = admin.apps.length > 0 ? admin.apps[0] : admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId: firebaseConfig.projectId || "tidy-skill-mcjsb",
+      });
+      adminDb = getAdminFirestore(adminApp, databaseId);
+    } catch (adminError: any) {
+      console.warn("[Firebase Admin Firestore] Initialization warning:", adminError.message || adminError);
+    }
+  } else {
+    console.warn("[Firebase Client] Config file firebase-applet-config.json not found.");
+  }
+} catch (error) {
+  console.error("[Firebase] Initialization failed:", error);
+}
+
+// Safe Firestore Helpers
 const safeGetDoc = async (collectionName: string, docId: string) => {
-  if (!db) {
-    console.warn(`[Safe Firestore] db is null when trying to getDoc for ${collectionName}/${docId}`);
+  const targetDb = clientDb || db || adminDb;
+  if (!targetDb) {
+    console.warn(`[Safe Firestore] No database instance when trying to getDoc for ${collectionName}/${docId}`);
     return null;
   }
   try {
-    if (typeof db.doc === 'function') {
-      // Admin SDK Firestore
-      const docRef = db.doc(`${collectionName}/${docId}`);
+    if (typeof targetDb.doc === 'function') {
+      const docRef = targetDb.doc(`${collectionName}/${docId}`);
       const snap = await docRef.get();
       return {
         exists: () => snap.exists,
         data: () => snap.data()
       };
     } else {
-      // Client SDK Firestore
-      const docRef = doc(db, collectionName, docId);
+      const docRef = doc(targetDb, collectionName, docId);
       const snap = await getDoc(docRef);
       return {
         exists: () => snap.exists(),
@@ -61,52 +95,24 @@ const safeGetDoc = async (collectionName: string, docId: string) => {
 };
 
 const safeSetDoc = async (collectionName: string, docId: string, data: any) => {
-  if (!db) {
-    console.warn(`[Safe Firestore] db is null when trying to setDoc for ${collectionName}/${docId}`);
+  const targetDb = clientDb || db || adminDb;
+  if (!targetDb) {
+    console.warn(`[Safe Firestore] No database instance when trying to setDoc for ${collectionName}/${docId}`);
     return;
   }
   try {
-    if (typeof db.doc === 'function') {
-      // Admin SDK Firestore
-      const docRef = db.doc(`${collectionName}/${docId}`);
-      await docRef.set(data);
+    if (typeof targetDb.doc === 'function') {
+      const docRef = targetDb.doc(`${collectionName}/${docId}`);
+      await docRef.set(data, { merge: true });
     } else {
-      // Client SDK Firestore
-      const docRef = doc(db, collectionName, docId);
-      await setDoc(docRef, data);
+      const docRef = doc(targetDb, collectionName, docId);
+      await setDoc(docRef, data, { merge: true });
     }
   } catch (err) {
     console.warn(`[Safe Firestore] setDoc failed for ${collectionName}/${docId}:`, err);
     throw err;
   }
 };
-
-try {
-  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-  if (fs.existsSync(configPath)) {
-    const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    const databaseId = firebaseConfig.firestoreDatabaseId;
-    
-    // First, try Firebase Admin Firestore (bypasses security rules completely)
-    try {
-      const adminApp = admin.apps.length > 0 ? admin.apps[0] : admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: firebaseConfig.projectId || "gen-lang-client-0237713481",
-      });
-      db = getAdminFirestore(adminApp, databaseId);
-      console.log(`[Firebase Admin Firestore] Initialized successfully with database ID: ${databaseId}`);
-    } catch (adminError: any) {
-      console.warn("[Firebase Admin Firestore] Initialization failed, falling back to Client SDK:", adminError.message || adminError);
-      const clientApp = initializeClientApp(firebaseConfig);
-      db = getClientFirestore(clientApp, databaseId);
-      console.log(`[Firebase Client] Initialized successfully with database ID: ${databaseId}`);
-    }
-  } else {
-    console.warn("[Firebase Client] Config file firebase-applet-config.json not found.");
-  }
-} catch (error) {
-  console.error("[Firebase] Initialization failed:", error);
-}
 
 // Server-side memory cache to protect the Gemini API Free Tier from 15 RPM/TPM rate limits
 interface CacheEntry {
@@ -2579,7 +2585,7 @@ Your report MUST contain exactly these four headers, structured as a single summ
       let accessCode: string | null = null;
       let uid: string | null = null;
 
-      // 1. Try Firebase Admin Authentication first (highly reliable, no permissions/rules issues)
+      // 1. Try Firebase Admin Authentication first (silently handle if Identity Toolkit API disabled)
       try {
         const userRecord = await admin.auth().getUserByEmail(email.trim().toLowerCase());
         exists = true;
@@ -2589,9 +2595,7 @@ Your report MUST contain exactly these four headers, structured as a single summ
           providers.push('password');
         }
       } catch (authErr: any) {
-        if (authErr.code !== 'auth/user-not-found') {
-          console.warn("[Auth Check Admin Auth Error]", authErr.message || authErr);
-        }
+        // Silently continue if Identity Toolkit API is disabled or user not found
       }
 
       // 2. Query Firestore to fetch supplementary info like accessCode and verify provider lists
