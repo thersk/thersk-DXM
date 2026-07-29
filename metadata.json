@@ -1,0 +1,8 @@
+{
+  "name": "DecodeXMarket Dashboard",
+  "description": "Premium institutional-grade market sentiment dashboard for Nifty50, BankNifty, and Sensex, featuring real-time data decoding and technical analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
