@@ -1,12 +1,12 @@
 {
-  "projectId": "tidy-skill-mcjsb",
-  "appId": "1:696993272168:web:9f12b6830b6dc80419c6dd",
-  "apiKey": "AIzaSyCMyzjEqdRwRJb8a4Ldtid7NV5QQctIiwE",
-  "authDomain": "tidy-skill-mcjsb.firebaseapp.com",
+  "projectId": "gen-lang-client-0237713481",
+  "appId": "1:116696787916:web:a74d130093890fbda08b69",
+  "apiKey": "AIzaSyCJNLnb7AcVd6aPqyYUPuFVkH8G7oXtxnk",
+  "authDomain": "gen-lang-client-0237713481.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-decodexmarketdas-6403a856-2a0e-423a-8148-1d5d92061e80",
-  "storageBucket": "tidy-skill-mcjsb.firebasestorage.app",
-  "messagingSenderId": "696993272168",
+  "storageBucket": "gen-lang-client-0237713481.firebasestorage.app",
+  "messagingSenderId": "116696787916",
   "measurementId": "",
-  "oAuthClientId": "696993272168-mpsk2o8rshav7odao3c9g427ng0q4nr1.apps.googleusercontent.com",
+  "oAuthClientId": "116696787916-qmkq039lvase90joauc8s1r0qrdm7jq5.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

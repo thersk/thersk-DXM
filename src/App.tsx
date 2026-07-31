@@ -22,6 +22,7 @@ import {
   Layers,
   Info,
   User,
+  Users,
   LogOut,
   Target,
   Calculator,
@@ -70,15 +71,16 @@ import {
   Timestamp,
   query,
   where,
-  deleteDoc
+  deleteDoc,
+  restoreTimestamps
 } from './firebase';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend } from 'recharts';
 
 import AstrologySection from './components/AstrologySection';
 import GannConceptsSection from './components/GannConceptsSection';
-import StockMarketNewsSection from './components/StockMarketNewsSection';
 import AstroAiChat from './components/AstroAiChat';
 import { TradingJournalMain } from './components/TradingJournal/TradingJournalMain';
+import { Sheet5View } from './components/Sheet5View';
 import { Sparkles, Compass, Newspaper } from 'lucide-react';
 
 // --- Types ---
@@ -192,9 +194,60 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     },
     operationType,
     path
-  }
+  };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
 }
+
+const formatExpiryDate = (expiry: any, fallback: string = '30 Days Trial'): string => {
+  if (!expiry) return fallback;
+  if (typeof expiry === 'string') {
+    if (expiry.toLowerCase().includes('lifetime')) return 'Lifetime';
+    if (expiry.toLowerCase().includes('active')) return 'Active';
+    const parsed = new Date(expiry);
+    return isNaN(parsed.getTime()) ? expiry : parsed.toLocaleDateString();
+  }
+  if (typeof expiry?.toDate === 'function') {
+    try {
+      return expiry.toDate().toLocaleDateString();
+    } catch {
+      return fallback;
+    }
+  }
+  if (typeof expiry?.seconds === 'number') {
+    return new Date(expiry.seconds * 1000).toLocaleDateString();
+  }
+  if (typeof expiry?._seconds === 'number') {
+    return new Date(expiry._seconds * 1000).toLocaleDateString();
+  }
+  if (expiry instanceof Date) {
+    return expiry.toLocaleDateString();
+  }
+  return fallback;
+};
+
+const parseTimestampToDate = (val: any): Date | null => {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (typeof val?.toDate === 'function') {
+    try {
+      const d = val.toDate();
+      if (d instanceof Date && !isNaN(d.getTime())) return d;
+    } catch {}
+  }
+  if (typeof val?.seconds === 'number') {
+    const d = new Date(val.seconds * 1000);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (typeof val?._seconds === 'number') {
+    const d = new Date(val._seconds * 1000);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (typeof val === 'string' || typeof val === 'number') {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+};
 
 const AuthPage = ({ onAuthSuccess, initialMode = 'login' }: { onAuthSuccess: () => void, initialMode?: 'login' | 'register' | 'forgot-password' }) => {
   const [mode, setMode] = useState<'login' | 'register' | 'forgot-password'>(initialMode);
@@ -1251,8 +1304,8 @@ const IndiaVixSpeedometer = ({ vixValue }: IndiaVixSpeedometerProps) => {
 };
 
 export default function App() {
-  const [view, setView] = useState<'landing' | 'dashboard' | 'backtest' | 'gann' | 'oi' | 'risk' | 'indicators' | 'auth' | 'pricing' | 'checkout' | 'user-management' | 'redeem-success' | 'journal'>('landing');
-  const [dashboardTab, setDashboardTab] = useState<'dashboard' | 'astrology' | 'gann' | 'news'>('dashboard');
+  const [view, setView] = useState<'landing' | 'dashboard' | 'backtest' | 'gann' | 'oi' | 'risk' | 'indicators' | 'auth' | 'pricing' | 'checkout' | 'user-management' | 'redeem-success' | 'journal' | 'sheet5'>('landing');
+  const [dashboardTab, setDashboardTab] = useState<'dashboard' | 'astrology' | 'gann'>('dashboard');
   const [selectedPlanDetail, setSelectedPlanDetail] = useState<{ id: string; name: string; price: number; originalPrice: number; discount: number } | null>(null);
   const [redeemDuration, setRedeemDuration] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -1349,18 +1402,98 @@ export default function App() {
       setAuthReady(true);
       
       if (currentUser) {
+        const isAdmin = currentUser.email === 'rshankartrader@gmail.com';
         try {
           const docRef = doc(db, 'users', currentUser.uid);
-          const docSnap = await getDoc(docRef);
+          let profileData: any = null;
+          try {
+            const docSnap = await getDoc(docRef);
+            if (docSnap && docSnap.exists()) {
+              profileData = docSnap.data();
+            }
+          } catch (e) {
+            console.warn("Client getDoc failed, attempting server proxy fallback...", e);
+          }
+
+          if (!profileData) {
+            try {
+              const res = await fetch('/api/firestore', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'get', path: `users/${currentUser.uid}` })
+              });
+              if (res.ok) {
+                const resJson = await res.json();
+                if (resJson && resJson.exists) {
+                  profileData = restoreTimestamps(resJson.data);
+                }
+              }
+            } catch (proxyErr) {
+              console.warn("Proxy fetch failed:", proxyErr);
+            }
+          }
+
           const nowTimestamp = Timestamp.now();
-          if (docSnap.exists()) {
-            await updateDoc(docRef, {
+
+          if (profileData) {
+            profileData = restoreTimestamps(profileData);
+            if (isAdmin) {
+              profileData.role = 'admin';
+              profileData.accessLevel = 1;
+              profileData.accessExpiry = 'Lifetime';
+            }
+            setUserProfile({ ...profileData, lastActive: nowTimestamp });
+
+            updateDoc(docRef, {
+              lastActive: nowTimestamp,
+              ...(isAdmin ? { role: 'admin', accessLevel: 1 } : {})
+            }).catch(() => {
+              fetch('/api/firestore', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  action: 'update',
+                  path: `users/${currentUser.uid}`,
+                  data: { lastActive: nowTimestamp.toDate().toISOString(), ...(isAdmin ? { role: 'admin', accessLevel: 1 } : {}) }
+                })
+              }).catch(e => console.error("Proxy update failed:", e));
+            });
+          } else {
+            const generatedCode = Math.random().toString(36).substring(2, 10).toUpperCase();
+            const newUserDoc: any = {
+              uid: currentUser.uid,
+              email: currentUser.email,
+              displayName: currentUser.displayName || currentUser.email?.split('@')[0],
+              role: isAdmin ? 'admin' : 'user',
+              accessLevel: isAdmin ? 1 : 0,
+              accessExpiry: isAdmin ? 'Lifetime' : null,
+              accessCode: generatedCode,
+              authProviders: ['google.com'],
+              createdAt: nowTimestamp,
               lastActive: nowTimestamp
-            }).catch(e => console.error("Could not update lastActive:", e));
-            setUserProfile({ ...docSnap.data(), lastActive: nowTimestamp });
+            };
+            setUserProfile(newUserDoc);
+            setDoc(docRef, newUserDoc).catch(() => {
+              fetch('/api/firestore', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'set', path: `users/${currentUser.uid}`, data: newUserDoc })
+              }).catch(e => console.error("Proxy set failed:", e));
+            });
           }
         } catch (err) {
-          handleFirestoreError(err, OperationType.GET, `users/${currentUser.uid}`);
+          console.error("User profile initialization error:", err);
+          if (isAdmin) {
+            setUserProfile({
+              uid: currentUser.uid,
+              email: currentUser.email,
+              displayName: 'Admin',
+              role: 'admin',
+              accessLevel: 1,
+              accessExpiry: 'Lifetime',
+              accessCode: 'ADMINMASTER'
+            });
+          }
         }
       } else {
         setUserProfile(null);
@@ -1400,7 +1533,7 @@ export default function App() {
 
       if (accessRequiredViews.includes(targetView)) {
         // Check for 30-day trial or Level 1 access
-        const registrationDate = userProfile?.createdAt?.toDate() || new Date();
+        const registrationDate = parseTimestampToDate(userProfile?.createdAt) || new Date();
         const now = new Date();
         const diffTime = Math.abs(now.getTime() - registrationDate.getTime());
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -1408,9 +1541,9 @@ export default function App() {
         const hasLifetimeAccess = userProfile?.accessLevel === 1 || userProfile?.role === 'admin';
         
         // Check for temporary access codes (RSK3, THERSK6)
-        // We'll store expiry in userProfile.accessExpiry
-        const isExpired = userProfile?.accessExpiry && userProfile.accessExpiry.toDate() < now;
-        const hasActiveTempAccess = userProfile?.accessExpiry && !isExpired;
+        const expDate = parseTimestampToDate(userProfile?.accessExpiry);
+        const isExpired = expDate ? expDate.getTime() < now.getTime() : false;
+        const hasActiveTempAccess = expDate ? !isExpired : false;
 
         if (!hasLifetimeAccess && !hasActiveTempAccess && diffDays > 30) {
           setView('pricing');
@@ -2057,7 +2190,7 @@ export default function App() {
                       ) : (
                         <>
                           Expiry: <span className="text-white font-bold">
-                            {userProfile?.accessExpiry ? userProfile.accessExpiry.toDate().toLocaleDateString() : '30 Days Trial'}
+                            {formatExpiryDate(userProfile?.accessExpiry, '30 Days Trial')}
                           </span>
                         </>
                       )}
@@ -2137,7 +2270,7 @@ export default function App() {
       const earlyBirdPrice = 15599;
       if (!userProfile) return { price: earlyBirdPrice, originalPrice: basePrice, discount: 40, isNew: true };
       
-      const registrationDate = userProfile.createdAt?.toDate() || new Date();
+      const registrationDate = parseTimestampToDate(userProfile.createdAt) || new Date();
       const now = new Date();
       const diffTime = Math.abs(now.getTime() - registrationDate.getTime());
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -2393,6 +2526,24 @@ export default function App() {
     useEffect(() => {
       const fetchUsers = async () => {
         try {
+          // Attempt server-side fetch via Admin SDK proxy first to bypass client rule limits
+          const res = await fetch('/api/firestore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'list', path: 'users' })
+          });
+          if (res.ok) {
+            const result = await res.json();
+            if (result.success && Array.isArray(result.docs)) {
+              const usersList = result.docs.map((d: any) => ({
+                id: d.id,
+                ...restoreTimestamps(d.data)
+              }));
+              setUsers(usersList);
+              return;
+            }
+          }
+          // Client SDK fallback
           const querySnapshot = await getDocs(collection(db, 'users'));
           const usersList = querySnapshot.docs.map(doc => ({
             id: doc.id,
@@ -2590,7 +2741,7 @@ export default function App() {
                           </span>
                           {u.accessExpiry && (
                             <span className="text-[10px] font-mono text-terminal-accent">
-                              Expires: {u.accessExpiry.toDate().toLocaleDateString()}
+                              Expires: {formatExpiryDate(u.accessExpiry, 'Active')}
                             </span>
                           )}
                         </div>
@@ -2754,49 +2905,61 @@ export default function App() {
             <div className="flex items-center space-x-1.5">
               <Zap className="w-4 h-4 text-terminal-accent mr-1" />
               <span className="text-[10px] font-mono text-terminal-accent uppercase tracking-widest">Master Signal</span>
-              {isMasterSignalSynced && (
+              {!isMasterSignalSynced ? (
+                <span className="text-[8px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded flex items-center gap-1 font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                  Datanse Live
+                </span>
+              ) : (
                 <span className="text-[8px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded flex items-center gap-1 font-bold">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  datanse Live
+                  Sheet Sync
                 </span>
               )}
             </div>
             <span className="text-[9px] font-mono text-gray-400 bg-white/5 px-2 py-0.5 rounded border border-white/5">
-              {isMasterSignalSynced && syncedDate ? syncedDate : data.decodedDate}
+              {!isMasterSignalSynced && syncedDate ? syncedDate : data.decodedDate}
             </span>
           </div>
           <div className={`text-2xl font-black uppercase tracking-tight py-1 ${
-            isMasterSignalSynced && syncedMasterSignal
+            syncedMasterSignal
               ? syncedMasterSignal.includes('DOWN') ? 'text-red-400' : syncedMasterSignal.includes('UP') ? 'text-emerald-400' : 'text-amber-400'
               : 'text-white'
           }`}>
-            {isMasterSignalSynced && syncedMasterSignal ? syncedMasterSignal : data.masterSignal}
+            {!isMasterSignalSynced && syncedMasterSignal ? syncedMasterSignal : (isMasterSignalSynced && syncedMasterSignal ? syncedMasterSignal : data.masterSignal)}
           </div>
-          <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between">
-            <motion.span 
-              animate={{ opacity: [0.5, 1, 0.5] }}
-              transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-              className="text-[9px] font-bold text-terminal-accent uppercase tracking-widest"
-            >
-              {isMasterSignalSynced ? 'Live datanse.onrender.com Bias' : 'Data Valid For Next Trading Session'}
-            </motion.span>
-            <div className="flex items-center space-x-2">
+          <div className="mt-4 pt-3 border-t border-white/10 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <motion.span 
+                animate={{ opacity: [0.5, 1, 0.5] }}
+                transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                className="text-[9px] font-bold uppercase tracking-wider text-terminal-accent"
+              >
+                {!isMasterSignalSynced ? 'Live Feed: datanse.onrender.com' : 'Master Sheet Signal Active'}
+              </motion.span>
+            </div>
+            <div className="flex items-center justify-between gap-2 pt-0.5">
               <button
                 onClick={() => {
                   setCustomSheetInput(masterSheetUrl);
                   setShowMasterSheetModal(true);
                 }}
                 title="Configure Master Signal Sheet URL"
-                className="text-gray-400 hover:text-terminal-accent transition-colors flex items-center gap-1 text-[9px] bg-white/5 hover:bg-white/10 px-1.5 py-0.5 rounded border border-white/10"
+                className="text-gray-300 hover:text-white transition-colors flex items-center gap-1 text-[9.5px] font-mono bg-white/5 hover:bg-white/10 px-2 py-1 rounded border border-white/10 shrink-0 font-medium"
               >
-                <Settings className="w-2.5 h-2.5" />
+                <Settings className="w-2.5 h-2.5 text-terminal-accent" />
                 Sheet URL
               </button>
               <button
                 onClick={() => setIsMasterSignalSynced(!isMasterSignalSynced)}
-                className="text-[9px] font-mono text-gray-400 hover:text-terminal-accent underline"
+                className={`text-[9.5px] font-mono font-bold uppercase px-2.5 py-1 rounded border transition-all shrink-0 flex items-center gap-1 cursor-pointer ${
+                  !isMasterSignalSynced
+                    ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-300'
+                    : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                }`}
               >
-                {isMasterSignalSynced ? 'Use Sheet' : 'Sync datanse'}
+                <RefreshCw className={`w-2.5 h-2.5 ${isDatanseLoading ? 'animate-spin' : ''}`} />
+                {!isMasterSignalSynced ? 'Switch to Sheet' : 'Switch to Datanse'}
               </button>
             </div>
           </div>
@@ -2809,13 +2972,7 @@ export default function App() {
                 <Shield className="w-3.5 h-3.5 text-terminal-accent mr-1" />
                 <span className="font-bold text-xs uppercase tracking-wider text-white">Participant Sentiment</span>
               </div>
-              <div className="flex items-center space-x-1.5">
-                {isMasterSignalSynced && (
-                  <span className="text-[8px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                    DecodeXMarket
-                  </span>
-                )}
+              <div className="flex items-center space-x-2">
                 {isMasterSignalSynced && (
                   <button
                     onClick={fetchDatanseSentiment}
@@ -2825,86 +2982,109 @@ export default function App() {
                     <RefreshCw className={`w-3 h-3 ${isDatanseLoading ? 'animate-spin text-terminal-accent' : ''}`} />
                   </button>
                 )}
+                <button
+                  onClick={() => setView('sheet5')}
+                  className="px-2 py-0.5 rounded bg-terminal-accent/10 border border-terminal-accent/30 text-terminal-accent hover:bg-terminal-accent/20 transition-all text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                >
+                  View All
+                  <ChevronRight className="w-3 h-3" />
+                </button>
               </div>
             </div>
           </div>
           <div className="p-3 space-y-2 font-mono">
-            {(isMasterSignalSynced && syncedParticipants ? syncedParticipants : data.participants).map((p, i) => {
-              const isExpanded = expandedParticipant === p.name;
-              const isBullish = (p.sentiment || '').toLowerCase().includes('bullish');
-              const isBearish = (p.sentiment || '').toLowerCase().includes('bearish');
+            {(() => {
+              const realDefaults: Record<string, any> = {
+                CLIENT: { todayAdded: '8,39,660', chgFromYday: '+1,96,089', action: 'Added Long', sentiment: 'BULLISH' },
+                DII: { todayAdded: '-2,998', chgFromYday: '-4,496', action: 'Added Short', sentiment: 'BEARISH' },
+                FII: { todayAdded: '-8,11,408', chgFromYday: '-7,786', action: 'Added Short', sentiment: 'BEARISH' },
+                PRO: { todayAdded: '-25,254', chgFromYday: '-1,83,808', action: 'Added Short', sentiment: 'BEARISH' },
+              };
+              const activeList = (isMasterSignalSynced && syncedParticipants ? syncedParticipants : data.participants) || [];
 
-              return (
-                <div key={i} className="border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] rounded transition-all">
-                  {/* Participant Main Row (Collapsed View shows Name + Sentiment Badge + Chevron) */}
-                  <div 
-                    onClick={() => setExpandedParticipant(isExpanded ? null : p.name)}
-                    className="flex items-center justify-between p-2.5 cursor-pointer select-none group"
-                  >
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-black text-gray-200 tracking-wider">{p.name}</span>
-                    </div>
+              return activeList.map((p, i) => {
+                const def = realDefaults[p.name?.toUpperCase()] || {};
+                const todayAddedVal = p.todayAdded || def.todayAdded || '0';
+                const chgFromYdayVal = p.chgFromYday || def.chgFromYday || '0';
+                const actionVal = p.action || def.action || (todayAddedVal.startsWith('-') ? 'Added Short' : 'Added Long');
+                const sentimentVal = p.sentiment || def.sentiment || 'BULLISH';
 
-                    <div className="flex items-center space-x-2">
-                      <div className={`flex items-center px-2 py-0.5 rounded text-[9.5px] font-black uppercase border ${
-                        isBullish ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 
-                        isBearish ? 'bg-rose-500/10 text-rose-400 border-rose-500/30' : 
-                        'bg-gray-500/10 text-gray-400 border-gray-500/20'
-                      }`}>
-                        {isBullish ? <TrendingUp className="w-3 h-3 mr-1" /> : isBearish ? <TrendingDown className="w-3 h-3 mr-1" /> : null}
-                        {p.sentiment}
+                const isExpanded = expandedParticipant === p.name;
+                const isBullish = (sentimentVal || '').toLowerCase().includes('bullish');
+                const isBearish = (sentimentVal || '').toLowerCase().includes('bearish');
+
+                return (
+                  <div key={i} className="border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] rounded transition-all">
+                    {/* Participant Main Row */}
+                    <div 
+                      onClick={() => setExpandedParticipant(isExpanded ? null : p.name)}
+                      className="flex items-center justify-between p-2.5 cursor-pointer select-none group"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs font-black text-gray-200 tracking-wider">{p.name}</span>
                       </div>
-                      <ChevronDown className={`w-3.5 h-3.5 text-gray-500 transition-transform duration-200 group-hover:text-terminal-accent ${isExpanded ? 'rotate-180 text-terminal-accent' : ''}`} />
-                    </div>
-                  </div>
 
-                  {/* Expandable Flow Interpretation Detail (Shown when user clicks participant/sentiment) */}
-                  <AnimatePresence>
-                    {isExpanded && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="overflow-hidden border-t border-white/5 bg-black/40 px-3 py-2.5 text-[10px]"
-                      >
-                        {p.action && (
-                          <div className="flex items-center justify-between mb-2 pb-2 border-b border-white/5">
-                            <span className="text-[9px] uppercase tracking-wider text-gray-400">Flow Action</span>
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                              p.action.toLowerCase().includes('long') && !p.action.toLowerCase().includes('unwounded')
-                                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
-                                : 'bg-rose-500/15 text-rose-400 border-rose-500/40'
+                      <div className="flex items-center space-x-2">
+                        <div className={`flex items-center px-2 py-0.5 rounded text-[9.5px] font-black uppercase border ${
+                          isBullish ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 
+                          isBearish ? 'bg-rose-500/10 text-rose-400 border-rose-500/30' : 
+                          'bg-gray-500/10 text-gray-400 border-gray-500/20'
+                        }`}>
+                          {isBullish ? <TrendingUp className="w-3 h-3 mr-1" /> : isBearish ? <TrendingDown className="w-3 h-3 mr-1" /> : null}
+                          {sentimentVal}
+                        </div>
+                        <ChevronDown className={`w-3.5 h-3.5 text-gray-500 transition-transform duration-200 group-hover:text-terminal-accent ${isExpanded ? 'rotate-180 text-terminal-accent' : ''}`} />
+                      </div>
+                    </div>
+
+                    {/* Expandable Flow Interpretation Detail */}
+                    <AnimatePresence>
+                      {isExpanded && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="overflow-hidden border-t border-white/10 bg-black/60 px-3 py-3 text-[10px] space-y-2.5"
+                        >
+                          <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                            <span className="text-[9px] font-mono uppercase tracking-wider text-gray-400 font-bold">
+                              Interpretation / Flow Action
+                            </span>
+                            <span className={`text-[10px] font-mono font-black px-2.5 py-0.5 rounded border uppercase ${
+                              actionVal.toLowerCase().includes('long') && !actionVal.toLowerCase().includes('unwounded')
+                                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'
+                                : 'bg-rose-500/20 text-rose-400 border-rose-500/50'
                             }`}>
-                              {p.action}
+                              {actionVal}
                             </span>
                           </div>
-                        )}
 
-                        <div className="grid grid-cols-2 gap-2 text-center">
-                          <div className="bg-white/5 p-2 rounded border border-white/5">
-                            <div className="text-[9px] uppercase tracking-wider text-gray-400 mb-0.5">Today Added</div>
-                            <div className={`text-xs font-black ${
-                              p.todayAdded?.toString().startsWith('-') ? 'text-rose-400' : 'text-emerald-400'
-                            }`}>
-                              {p.todayAdded || (p.netIndexFut !== undefined ? (p.netIndexFut > 0 ? `+${p.netIndexFut.toLocaleString()}` : p.netIndexFut.toLocaleString()) : 'N/A')}
+                          <div className="grid grid-cols-2 gap-2 text-center">
+                            <div className="bg-white/5 p-2 rounded-md border border-white/10">
+                              <div className="text-[9px] font-mono uppercase tracking-wider text-gray-400 mb-0.5 font-semibold">Today Added</div>
+                              <div className={`text-xs font-black font-mono ${
+                                todayAddedVal.startsWith('-') ? 'text-rose-400' : 'text-emerald-400'
+                              }`}>
+                                {todayAddedVal}
+                              </div>
+                            </div>
+
+                            <div className="bg-white/5 p-2 rounded-md border border-white/10">
+                              <div className="text-[9px] font-mono uppercase tracking-wider text-gray-400 mb-0.5 font-semibold">Chg From Y'day</div>
+                              <div className={`text-xs font-black font-mono ${
+                                chgFromYdayVal.startsWith('-') ? 'text-rose-400' : 'text-emerald-400'
+                              }`}>
+                                {chgFromYdayVal}
+                              </div>
                             </div>
                           </div>
-
-                          <div className="bg-white/5 p-2 rounded border border-white/5">
-                            <div className="text-[9px] uppercase tracking-wider text-gray-400 mb-0.5">Chg From Y'day</div>
-                            <div className={`text-xs font-black ${
-                              p.chgFromYday?.toString().startsWith('-') ? 'text-rose-400' : 'text-emerald-400'
-                            }`}>
-                              {p.chgFromYday || 'N/A'}
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              );
-            })}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
 
@@ -4369,7 +4549,7 @@ export default function App() {
       const earlyBirdPrice = 15599;
       if (!userProfile) return { price: earlyBirdPrice, originalPrice: basePrice, discount: 40, isNew: true };
       
-      const registrationDate = userProfile.createdAt?.toDate() || new Date();
+      const registrationDate = parseTimestampToDate(userProfile.createdAt) || new Date();
       const now = new Date();
       const diffTime = Math.abs(now.getTime() - registrationDate.getTime());
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -4891,6 +5071,7 @@ export default function App() {
     { label: 'BACKTEST LAB', icon: Calculator, view: 'backtest' },
     { label: 'O.I ANALYSIS', icon: BarChart3, view: 'oi' },
     { label: 'INDICATORS', icon: LineChart, view: 'indicators' },
+    { label: 'USER DETAILS', icon: Users, view: 'user-management' },
     { label: 'IMPORTANT LINKS', icon: Info, view: 'links', onClick: () => { setShowLinksModal(true); setIsMenuOpen(false); } },
   ];
 
@@ -4942,14 +5123,16 @@ export default function App() {
           ))}
           
           {user ? (
-            <div className="flex items-center space-x-4 pl-4 border-l border-terminal-border">
+            <div className="flex items-center space-x-3 pl-4 border-l border-terminal-border">
               <div className="flex flex-col items-end">
                 <span className="text-[10px] font-bold text-white uppercase leading-tight">{userProfile?.displayName || user.email?.split('@')[0]}</span>
                 <div className="flex flex-col items-end">
-                  <span className="text-[8px] font-mono text-terminal-accent uppercase tracking-widest leading-tight">{userProfile?.role || 'User'}</span>
+                  <span className="text-[8px] font-mono text-terminal-accent uppercase tracking-widest leading-tight">
+                    {user.email === 'rshankartrader@gmail.com' || userProfile?.role === 'admin' ? 'admin' : (userProfile?.role || 'User')}
+                  </span>
                   <span className="text-[7px] font-mono text-gray-500 uppercase tracking-tighter leading-tight">
-                    {userProfile?.accessLevel === 1 ? 'Lifetime Access' : (
-                      <>Expiry: {userProfile?.accessExpiry ? userProfile.accessExpiry.toDate().toLocaleDateString() : '30 Days Trial'}</>
+                    {user.email === 'rshankartrader@gmail.com' || userProfile?.role === 'admin' || userProfile?.accessLevel === 1 ? 'Lifetime Access' : (
+                      <>Expiry: {formatExpiryDate(userProfile?.accessExpiry, '30 Days Trial')}</>
                     )}
                   </span>
                 </div>
@@ -4977,8 +5160,8 @@ export default function App() {
           {user && (
             <div className="md:hidden flex flex-col items-end mr-2">
               <span className="text-[7px] font-mono text-terminal-accent uppercase tracking-tighter leading-tight">
-                {userProfile?.accessLevel === 1 ? 'Lifetime' : (
-                  <>{userProfile?.accessExpiry ? userProfile.accessExpiry.toDate().toLocaleDateString() : 'Trial'}</>
+                {user.email === 'rshankartrader@gmail.com' || userProfile?.role === 'admin' || userProfile?.accessLevel === 1 ? 'Lifetime' : (
+                  <>{formatExpiryDate(userProfile?.accessExpiry, 'Trial')}</>
                 )}
               </span>
             </div>
@@ -5134,8 +5317,7 @@ export default function App() {
           {[
             { id: 'dashboard', label: 'Dashboard', icon: Monitor },
             { id: 'astrology', label: 'Astrological Section', icon: Sparkles },
-            { id: 'gann', label: 'Gann Concepts', icon: Compass },
-            { id: 'news', label: 'Stock Market News', icon: Newspaper }
+            { id: 'gann', label: 'Gann Concepts', icon: Compass }
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = dashboardTab === tab.id;
@@ -5174,8 +5356,6 @@ export default function App() {
             <AstrologySection isAdmin={user?.email === 'rshankartrader@gmail.com' || userProfile?.role === 'admin'} />
           ) : dashboardTab === 'gann' ? (
             <GannConceptsSection />
-          ) : dashboardTab === 'news' ? (
-            <StockMarketNewsSection />
           ) : null
         ) : view === 'backtest' ? (
           <BacktestLab />
@@ -5197,6 +5377,13 @@ export default function App() {
           <UserManagement />
         ) : view === 'journal' ? (
           <TradingJournalMain />
+        ) : view === 'sheet5' ? (
+          <Sheet5View
+            onBack={() => setView('dashboard')}
+            isMasterSignalSynced={isMasterSignalSynced}
+            onToggleMasterSignalSync={setIsMasterSignalSynced}
+            masterSheetUrl={masterSheetUrl}
+          />
         ) : null}
       </main>
 

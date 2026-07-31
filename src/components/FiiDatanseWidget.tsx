@@ -137,25 +137,25 @@ export const FiiDatanseWidget: React.FC<FiiDatanseWidgetProps> = ({
         </div>
 
         <div className="flex items-center space-x-3">
-          {/* Master Signal Sync Toggle */}
+          {/* Master Signal Feed Source Switcher */}
           {onToggleMasterSignalSync && (
             <button
               onClick={() => {
                 const nextVal = !isMasterSignalSynced;
                 onToggleMasterSignalSync(nextVal);
-                if (nextVal && data && onSyncWithMasterSignal) {
+                if (!nextVal && data && onSyncWithMasterSignal) {
                   onSyncWithMasterSignal(data.systemMarketBias, data.participants, data.date);
                 }
               }}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded text-[10px] font-bold uppercase transition-all border ${
-                isMasterSignalSynced
-                  ? 'bg-terminal-accent/20 border-terminal-accent text-terminal-accent shadow-sm'
-                  : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'
+              className={`flex items-center space-x-1.5 px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all border cursor-pointer ${
+                !isMasterSignalSynced
+                  ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 shadow-md shadow-cyan-950/50'
+                  : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30'
               }`}
-              title="Sync Master Signal with datanse.onrender.com live FII Bias"
+              title="Switch between datanse.onrender.com Live Feed and Sheet Data"
             >
-              <Zap className="w-3 h-3" />
-              <span>{isMasterSignalSynced ? 'Master Signal Synced' : 'Sync Master Signal'}</span>
+              <Zap className={`w-3 h-3 ${!isMasterSignalSynced ? 'text-cyan-400 animate-pulse' : 'text-emerald-400'}`} />
+              <span>{!isMasterSignalSynced ? 'DATANSE LIVE FEED ACTIVE' : 'Switch to Datanse Live'}</span>
             </button>
           )}
 

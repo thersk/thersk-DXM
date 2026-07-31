@@ -97,20 +97,20 @@ export default function AstrologySection({ isAdmin = false }: AstrologySectionPr
 
   // --- Panchak & Amavasya Cosmic Cycles Data ---
   const panchakPeriods = [
-    { id: 20, start: new Date("2026-06-06T19:03:00+05:30"), end: new Date("2026-06-11T08:16:00+05:30"), name: "June 2026", status: "Last Panchak" },
-    { id: 21, start: new Date("2026-07-04T00:48:00+05:30"), end: new Date("2026-07-08T16:00:00+05:30"), name: "July 2026", status: "Upcoming 1" },
-    { id: 22, start: new Date("2026-07-31T06:38:00+05:30"), end: new Date("2026-08-04T21:54:00+05:30"), name: "August 2026", status: "Upcoming 2" },
-    { id: 23, start: new Date("2026-08-27T13:35:00+05:30"), end: new Date("2026-09-01T03:23:00+05:30"), name: "September 2026", status: "Upcoming 3" }
+    { id: 21, start: new Date("2026-07-04T00:48:00+05:30"), end: new Date("2026-07-08T16:00:00+05:30"), name: "July 2026", status: "Last Panchak" },
+    { id: 22, start: new Date("2026-07-31T06:38:00+05:30"), end: new Date("2026-08-04T21:54:00+05:30"), name: "August 2026", status: "Upcoming 1" },
+    { id: 23, start: new Date("2026-08-27T13:35:00+05:30"), end: new Date("2026-09-01T03:23:00+05:30"), name: "September 2026", status: "Upcoming 2" },
+    { id: 24, start: new Date("2026-09-23T21:18:00+05:30"), end: new Date("2026-09-28T09:42:00+05:30"), name: "October 2026", status: "Upcoming 3" }
   ];
 
   const amavasyaPeriods = [
-    { id: 18, date: new Date("2026-06-15T00:00:00+05:30"), name: "June 2026", status: "Last Amavasya" },
-    { id: 19, date: new Date("2026-07-14T00:00:00+05:30"), name: "July 2026", status: "Upcoming 1" },
-    { id: 20, date: new Date("2026-08-12T00:00:00+05:30"), name: "August 2026", status: "Upcoming 2" },
-    { id: 21, date: new Date("2026-09-10T00:00:00+05:30"), name: "September 2026", status: "Upcoming 3" }
+    { id: 19, date: new Date("2026-07-14T00:00:00+05:30"), name: "July 2026", status: "Last Amavasya" },
+    { id: 20, date: new Date("2026-08-12T00:00:00+05:30"), name: "August 2026", status: "Upcoming 1" },
+    { id: 21, date: new Date("2026-09-10T00:00:00+05:30"), name: "September 2026", status: "Upcoming 2" },
+    { id: 22, date: new Date("2026-10-10T00:00:00+05:30"), name: "October 2026", status: "Upcoming 3" }
   ];
 
-  const [selectedPanchakId, setSelectedPanchakId] = useState<number>(20);
+  const [selectedPanchakId, setSelectedPanchakId] = useState<number>(21);
   const [selectedInstrument, setSelectedInstrument] = useState<string>("Nifty 50");
   const [presetOrCustom, setPresetOrCustom] = useState<string>("Nifty 50");
   const [customSymbolInput, setCustomSymbolInput] = useState<string>("RELIANCE");
@@ -278,7 +278,7 @@ export default function AstrologySection({ isAdmin = false }: AstrologySectionPr
     if (realYear >= 2026 && realYear <= 2036) {
       return new Date(Date.UTC(realDate.getUTCFullYear(), realDate.getUTCMonth(), realDate.getUTCDate()));
     } else {
-      return new Date(Date.UTC(2026, 5, 29)); // Default today: 2026-06-29 (matching Nifty live active dataset pivot)
+      return new Date(Date.UTC(2026, 6, 29)); // Default today: 2026-07-29 (matching July active dataset pivot)
     }
   }, []);
 

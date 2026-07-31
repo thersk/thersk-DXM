@@ -44,19 +44,15 @@ let isOfflineMode = false;
 export function restoreTimestamps(val: any): any {
   if (!val || typeof val !== 'object') return val;
   
-  // Admin SDK Timestamp: { _seconds: number, _nanoseconds: number }
-  if (typeof val._seconds === 'number') {
-    return Timestamp.fromMillis(val._seconds * 1000 + Math.floor((val._nanoseconds || 0) / 1000000));
-  }
-  
-  // Client SDK Timestamp: { seconds: number, nanoseconds: number }
-  if (typeof val.seconds === 'number' && typeof val.nanoseconds === 'number') {
-    return Timestamp.fromMillis(val.seconds * 1000 + Math.floor(val.nanoseconds / 1000000));
-  }
-
-  // Client SDK Timestamp alternative: { seconds: number, nanos: number }
-  if (typeof val.seconds === 'number' && typeof val.nanos === 'number') {
-    return Timestamp.fromMillis(val.seconds * 1000 + Math.floor(val.nanos / 1000000));
+  // Admin SDK or serialized Timestamp: { _seconds / seconds: number, _nanoseconds / nanoseconds / nanos: number }
+  const sec = typeof val._seconds === 'number' ? val._seconds : (typeof val.seconds === 'number' ? val.seconds : null);
+  if (sec !== null) {
+    const nano = val._nanoseconds ?? val.nanoseconds ?? val.nanos ?? 0;
+    try {
+      return Timestamp.fromMillis(sec * 1000 + Math.floor(nano / 1000000));
+    } catch {
+      // fallback
+    }
   }
   
   if (Array.isArray(val)) {
@@ -72,12 +68,12 @@ export function restoreTimestamps(val: any): any {
 
 function isOfflineOrPermissionError(err: any): boolean {
   const msg = err?.message || String(err);
+  // Only trigger offline fallback for actual network connection failures, NOT auth or permission errors
   return (
     msg.includes('offline') || 
     msg.includes('unavailable') || 
-    msg.includes('Could not reach') || 
-    msg.includes('permission-denied') || 
-    msg.includes('Missing or insufficient permissions')
+    msg.includes('Could not reach') ||
+    msg.includes('Failed to get document because the client is offline')
   );
 }
 
@@ -132,7 +128,8 @@ export function doc(dbOrRef: any, ...segments: string[]) {
   if (!isOfflineMode) {
     try {
       const base = dbOrRef instanceof CustomDocRef ? dbOrRef.realRef :
-                   dbOrRef instanceof CustomCollectionRef ? dbOrRef.realRef : dbOrRef;
+                   dbOrRef instanceof CustomCollectionRef ? dbOrRef.realRef :
+                   dbOrRef?.realRef || dbOrRef;
       realRef = (realDoc as any)(base, ...segments);
     } catch (e) {
       // ignore
@@ -158,7 +155,8 @@ export function collection(dbOrRef: any, ...segments: string[]) {
   if (!isOfflineMode) {
     try {
       const base = dbOrRef instanceof CustomDocRef ? dbOrRef.realRef :
-                   dbOrRef instanceof CustomCollectionRef ? dbOrRef.realRef : dbOrRef;
+                   dbOrRef instanceof CustomCollectionRef ? dbOrRef.realRef :
+                   dbOrRef?.realRef || dbOrRef;
       realRef = (realCollection as any)(base, ...segments);
     } catch (e) {
       // ignore
@@ -171,7 +169,9 @@ export function collection(dbOrRef: any, ...segments: string[]) {
 export function query(baseRef: any, ...constraints: any[]) {
   if (!isOfflineMode) {
     try {
-      const realBase = baseRef instanceof CustomCollectionRef ? baseRef.realRef : baseRef;
+      const realBase = baseRef instanceof CustomCollectionRef ? baseRef.realRef :
+                       baseRef instanceof CustomQuery ? baseRef.realQuery :
+                       baseRef?.realRef || baseRef?.realQuery || baseRef;
       const realConstraints = constraints.map(c => c?.realConstraint || c).filter(Boolean);
       const q = realQuery(realBase, ...realConstraints);
       const customQ = new CustomQuery(baseRef.path, q);
@@ -227,7 +227,8 @@ export function where(field: string, op: string, value: any) {
 export async function getDoc(docRef: any) {
   if (!isOfflineMode) {
     try {
-      const snap = await realGetDoc(docRef instanceof CustomDocRef ? docRef.realRef : docRef);
+      const realTarget = docRef instanceof CustomDocRef ? docRef.realRef : docRef?.realRef || docRef;
+      const snap = await realGetDoc(realTarget);
       return snap;
     } catch (err: any) {
       if (isOfflineOrPermissionError(err)) {
@@ -264,7 +265,8 @@ export async function getDocFromServer(docRef: any) {
 export async function setDoc(docRef: any, data: any, options?: any) {
   if (!isOfflineMode) {
     try {
-      await realSetDoc(docRef instanceof CustomDocRef ? docRef.realRef : docRef, data, options);
+      const realTarget = docRef instanceof CustomDocRef ? docRef.realRef : docRef?.realRef || docRef;
+      await realSetDoc(realTarget, data, options);
       return;
     } catch (err: any) {
       if (isOfflineOrPermissionError(err)) {
@@ -289,7 +291,8 @@ export async function setDoc(docRef: any, data: any, options?: any) {
 export async function updateDoc(docRef: any, data: any) {
   if (!isOfflineMode) {
     try {
-      await realUpdateDoc(docRef instanceof CustomDocRef ? docRef.realRef : docRef, data);
+      const realTarget = docRef instanceof CustomDocRef ? docRef.realRef : docRef?.realRef || docRef;
+      await realUpdateDoc(realTarget, data);
       return;
     } catch (err: any) {
       if (isOfflineOrPermissionError(err)) {
@@ -314,7 +317,8 @@ export async function updateDoc(docRef: any, data: any) {
 export async function deleteDoc(docRef: any) {
   if (!isOfflineMode) {
     try {
-      await realDeleteDoc(docRef instanceof CustomDocRef ? docRef.realRef : docRef);
+      const realTarget = docRef instanceof CustomDocRef ? docRef.realRef : docRef?.realRef || docRef;
+      await realDeleteDoc(realTarget);
       return;
     } catch (err: any) {
       if (isOfflineOrPermissionError(err)) {
@@ -339,7 +343,8 @@ export async function deleteDoc(docRef: any) {
 export async function addDoc(collectionRef: any, data: any) {
   if (!isOfflineMode) {
     try {
-      const docRef = await realAddDoc(collectionRef instanceof CustomCollectionRef ? collectionRef.realRef : collectionRef, data);
+      const realTarget = collectionRef instanceof CustomCollectionRef ? collectionRef.realRef : collectionRef?.realRef || collectionRef;
+      const docRef = await realAddDoc(realTarget, data);
       return docRef;
     } catch (err: any) {
       if (isOfflineOrPermissionError(err)) {
@@ -368,7 +373,10 @@ export async function addDoc(collectionRef: any, data: any) {
 export async function getDocs(queryObj: any) {
   if (!isOfflineMode) {
     try {
-      const snap = await realGetDocs(queryObj instanceof CustomQuery ? queryObj.realQuery : queryObj);
+      const realTarget = queryObj instanceof CustomQuery ? queryObj.realQuery :
+                         queryObj instanceof CustomCollectionRef ? queryObj.realRef :
+                         queryObj?.realQuery || queryObj?.realRef || queryObj;
+      const snap = await realGetDocs(realTarget);
       return snap;
     } catch (err: any) {
       if (isOfflineOrPermissionError(err)) {

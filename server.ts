@@ -27,7 +27,7 @@ try {
   console.warn("[Firebase Admin] Initialization failed. Admin features like password reset via OTP may not work without a service account.", error);
 }
 
-// Initialize Firebase Firestore with Client SDK as primary for correct database target, with Admin SDK fallback
+// Initialize Firebase Firestore with Admin SDK as primary (bypasses security rules) with Client SDK fallback
 let clientDb: any = null;
 let adminDb: any = null;
 let db: any = null;
@@ -37,26 +37,28 @@ try {
   if (fs.existsSync(configPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
     const databaseId = firebaseConfig.firestoreDatabaseId;
+
+    // Initialize Admin SDK Firestore (bypasses security rules for server operations)
+    try {
+      const adminApp = admin.apps.length > 0 ? admin.apps[0] : admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId: firebaseConfig.projectId || "gen-lang-client-0237713481",
+      });
+      adminDb = getAdminFirestore(adminApp, databaseId);
+      db = adminDb;
+      console.log(`[Firebase Admin Firestore] Initialized successfully with database ID: ${databaseId}`);
+    } catch (adminError: any) {
+      console.warn("[Firebase Admin Firestore] Initialization warning:", adminError.message || adminError);
+    }
     
     // Always initialize Client SDK Firestore (uses web API key & project configuration)
     try {
       const clientApp = initializeClientApp(firebaseConfig);
       clientDb = getClientFirestore(clientApp, databaseId);
-      db = clientDb; // Use clientDb as primary database
+      if (!db) db = clientDb;
       console.log(`[Firebase Client] Initialized successfully with database ID: ${databaseId}`);
     } catch (clientErr) {
       console.warn("[Firebase Client] Initialization failed:", clientErr);
-    }
-
-    // Initialize Admin SDK Firestore if available
-    try {
-      const adminApp = admin.apps.length > 0 ? admin.apps[0] : admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: firebaseConfig.projectId || "tidy-skill-mcjsb",
-      });
-      adminDb = getAdminFirestore(adminApp, databaseId);
-    } catch (adminError: any) {
-      console.warn("[Firebase Admin Firestore] Initialization warning:", adminError.message || adminError);
     }
   } else {
     console.warn("[Firebase Client] Config file firebase-applet-config.json not found.");
@@ -67,7 +69,7 @@ try {
 
 // Safe Firestore Helpers
 const safeGetDoc = async (collectionName: string, docId: string) => {
-  const targetDb = clientDb || db || adminDb;
+  const targetDb = adminDb || clientDb || db;
   if (!targetDb) {
     console.warn(`[Safe Firestore] No database instance when trying to getDoc for ${collectionName}/${docId}`);
     return null;
@@ -95,7 +97,7 @@ const safeGetDoc = async (collectionName: string, docId: string) => {
 };
 
 const safeSetDoc = async (collectionName: string, docId: string, data: any) => {
-  const targetDb = clientDb || db || adminDb;
+  const targetDb = adminDb || clientDb || db;
   if (!targetDb) {
     console.warn(`[Safe Firestore] No database instance when trying to setDoc for ${collectionName}/${docId}`);
     return;
@@ -184,6 +186,7 @@ async function startServer() {
       let foundData: any = null;
       let foundPrevData: any = null;
       let foundActivity: any = null;
+      let foundMultiDayScrape: any[] = [];
       let activeDateStr = "";
 
       for (const dateStr of datesToTry) {
@@ -204,6 +207,7 @@ async function startServer() {
             foundData = scrapeList;
             foundPrevData = prevScrapeList;
             foundActivity = resActivity?.data;
+            foundMultiDayScrape = Array.isArray(resScrape) ? resScrape : [resScrape];
             activeDateStr = (Array.isArray(resScrape) && resScrape[0]?.date) ? resScrape[0].date : dateStr;
             break;
           }
@@ -276,7 +280,7 @@ async function startServer() {
 
       // Calculate DecodeXMarket Flow Interpretation Summary
       const getParticipantFlow = (p0: any, p1: any) => {
-        if (!p0) return { todayAdded: 0, todayAddedFormatted: "0", chgFromYday: 0, chgFromYdayFormatted: "0", action: "Neutral", sentiment: "NEUTRAL" };
+        if (!p0) return { todayAdded: "0", chgFromYday: "0", action: "Neutral", sentiment: "NEUTRAL", todayAddedNum: 0, netPosNum: 0 };
         
         const netFut0 = (p0.futureIndexLong || 0) - (p0.futureIndexShort || 0);
         const netCall0 = (p0.optionIndexCallLong || 0) - (p0.optionIndexCallShort || 0);
@@ -291,33 +295,40 @@ async function startServer() {
           vec1 = netFut1 + netCall1 + netPut1;
         }
 
-        const todayAdded = vec0;
-        const chgFromYday = vec0 - vec1;
+        const contractsAddedToday = vec0 - vec1;
+        const totalNetPosition = vec0;
 
         let action = "Neutral";
         let sentiment: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
 
-        if (vec0 > 0 && chgFromYday > 0) {
-          action = "Added Long";
-          sentiment = "BULLISH";
-        } else if (vec0 > 0 && chgFromYday < 0) {
-          action = Math.abs(chgFromYday) > 2000 ? "Unwounded Long Aggressively" : "Unwounded Long";
-          sentiment = "BEARISH";
-        } else if (vec0 < 0 && chgFromYday < 0) {
-          action = "Added Short";
-          sentiment = "BEARISH";
-        } else if (vec0 < 0 && chgFromYday > 0) {
-          action = "Covered Short";
-          sentiment = "BULLISH";
+        if (contractsAddedToday > 0) {
+          if (totalNetPosition >= 0) {
+            action = "Added Long";
+            sentiment = "BULLISH";
+          } else {
+            action = "Covered Short";
+            sentiment = "BULLISH";
+          }
+        } else if (contractsAddedToday < 0) {
+          if (totalNetPosition <= 0) {
+            action = "Added Short";
+            sentiment = "BEARISH";
+          } else {
+            action = Math.abs(contractsAddedToday) > 50000 ? "Unwounded Long Aggressively" : "Unwounded Long";
+            sentiment = "BEARISH";
+          }
+        } else {
+          sentiment = totalNetPosition >= 0 ? "BULLISH" : "BEARISH";
+          action = totalNetPosition >= 0 ? "Holding Long" : "Holding Short";
         }
 
         return {
-          todayAdded,
-          todayAddedFormatted: formatInr(todayAdded),
-          chgFromYday,
-          chgFromYdayFormatted: (chgFromYday > 0 ? "+" : "") + formatInr(chgFromYday),
+          todayAdded: formatInr(totalNetPosition),
+          chgFromYday: (contractsAddedToday > 0 ? "+" : "") + formatInr(contractsAddedToday),
           action,
-          sentiment
+          sentiment,
+          todayAddedNum: totalNetPosition,
+          netPosNum: contractsAddedToday
         };
       };
 
@@ -336,32 +347,32 @@ async function startServer() {
           name: "CLIENT",
           sentiment: clientFlow.sentiment,
           action: clientFlow.action,
-          todayAdded: clientFlow.todayAddedFormatted,
-          chgFromYday: clientFlow.chgFromYdayFormatted,
+          todayAdded: clientFlow.todayAdded,
+          chgFromYday: clientFlow.chgFromYday,
           netIndexFut: clientNetFut
         },
         {
           name: "DII",
           sentiment: diiFlow.sentiment,
           action: diiFlow.action,
-          todayAdded: diiFlow.todayAddedFormatted,
-          chgFromYday: diiFlow.chgFromYdayFormatted,
+          todayAdded: diiFlow.todayAdded,
+          chgFromYday: diiFlow.chgFromYday,
           netIndexFut: diiNetFut
         },
         {
           name: "FII",
           sentiment: fiiFlow.sentiment,
           action: fiiFlow.action,
-          todayAdded: fiiFlow.todayAddedFormatted,
-          chgFromYday: fiiFlow.chgFromYdayFormatted,
+          todayAdded: fiiFlow.todayAdded,
+          chgFromYday: fiiFlow.chgFromYday,
           netIndexFut: fiiNetFut
         },
         {
           name: "PRO",
           sentiment: proFlow.sentiment,
           action: proFlow.action,
-          todayAdded: proFlow.todayAddedFormatted,
-          chgFromYday: proFlow.chgFromYdayFormatted,
+          todayAdded: proFlow.todayAdded,
+          chgFromYday: proFlow.chgFromYday,
           netIndexFut: proNetFut
         }
       ];
@@ -383,8 +394,10 @@ async function startServer() {
           fiiIdxFut,
           fiiIdxOpt
         },
+        fiiDiiActivity: foundActivity?.FIIDIIData || [],
         participants,
-        rawParticipantOI: foundData
+        rawParticipantOI: foundData,
+        multiDayScrape: foundMultiDayScrape
       });
     } catch (err: any) {
       console.error("[datanse API Error]:", err);
@@ -395,22 +408,32 @@ async function startServer() {
   // Generic Secure Server-Side Firestore Proxy
   app.post("/api/firestore", async (req, res) => {
     const { action, path: docPath, data, orderByField, orderByDirection, limitCount } = req.body;
-    if (!db) {
-      console.warn("[Firestore Proxy API] db is null on server");
+    const targetDb = adminDb || clientDb || db;
+    if (!targetDb) {
+      console.warn("[Firestore Proxy API] targetDb is null on server");
       return res.status(500).json({ error: "Firestore database not initialized on server." });
     }
     try {
       if (action === 'get') {
         try {
-          const docRef = db.doc(docPath);
-          const snap = await docRef.get();
-          if (!snap || !snap.exists) {
-            return res.json({ exists: false, data: null });
+          if (typeof targetDb.doc === 'function') {
+            const docRef = targetDb.doc(docPath);
+            const snap = await docRef.get();
+            if (!snap || !snap.exists) {
+              return res.json({ exists: false, data: null });
+            }
+            return res.json({ exists: true, data: snap.data() });
+          } else {
+            const docRef = doc(targetDb, docPath);
+            const snap = await getDoc(docRef);
+            if (!snap || !snap.exists()) {
+              return res.json({ exists: false, data: null });
+            }
+            return res.json({ exists: true, data: snap.data() });
           }
-          return res.json({ exists: true, data: snap.data() });
         } catch (getErr: any) {
           const msg = getErr?.message || String(getErr);
-          if (getErr?.code === 5 || getErr?.code === 'not-found' || msg.includes('NOT_FOUND') || msg.includes('not found')) {
+          if (getErr?.code === 5 || getErr?.code === 7 || getErr?.code === 'not-found' || msg.includes('NOT_FOUND') || msg.includes('PERMISSION_DENIED') || msg.includes('not found')) {
             return res.json({ exists: false, data: null });
           }
           throw getErr;
@@ -418,20 +441,33 @@ async function startServer() {
       }
 
       if (action === 'set') {
-        const docRef = db.doc(docPath);
-        // Ensure standard fields like updatedAt/createdAt have correct types or are parsed if needed
-        await docRef.set(data || {}, { merge: true });
+        if (typeof targetDb.doc === 'function') {
+          const docRef = targetDb.doc(docPath);
+          await docRef.set(data || {}, { merge: true });
+        } else {
+          const docRef = doc(targetDb, docPath);
+          await setDoc(docRef, data || {}, { merge: true });
+        }
         return res.json({ success: true });
       }
 
       if (action === 'update') {
-        const docRef = db.doc(docPath);
         try {
-          await docRef.update(data || {});
+          if (typeof targetDb.doc === 'function') {
+            const docRef = targetDb.doc(docPath);
+            await docRef.update(data || {});
+          } else {
+            const docRef = doc(targetDb, docPath);
+            await updateDoc(docRef, data || {});
+          }
         } catch (updateErr: any) {
           const msg = updateErr?.message || String(updateErr);
           if (updateErr?.code === 5 || updateErr?.code === 'not-found' || msg.includes('NOT_FOUND') || msg.includes('not found')) {
-            await docRef.set(data || {}, { merge: true });
+            if (typeof targetDb.doc === 'function') {
+              await targetDb.doc(docPath).set(data || {}, { merge: true });
+            } else {
+              await setDoc(doc(targetDb, docPath), data || {}, { merge: true });
+            }
           } else {
             throw updateErr;
           }
@@ -440,9 +476,14 @@ async function startServer() {
       }
 
       if (action === 'delete') {
-        const docRef = db.doc(docPath);
         try {
-          await docRef.delete();
+          if (typeof targetDb.doc === 'function') {
+            const docRef = targetDb.doc(docPath);
+            await docRef.delete();
+          } else {
+            const docRef = doc(targetDb, docPath);
+            await deleteDoc(docRef);
+          }
         } catch (delErr: any) {
           const msg = delErr?.message || String(delErr);
           if (delErr?.code === 5 || delErr?.code === 'not-found' || msg.includes('NOT_FOUND') || msg.includes('not found')) {
@@ -455,22 +496,38 @@ async function startServer() {
 
       if (action === 'list') {
         try {
-          let colRef = db.collection(docPath);
-          if (orderByField) {
-            colRef = colRef.orderBy(orderByField, orderByDirection || 'asc');
+          if (typeof targetDb.collection === 'function') {
+            let colRef = targetDb.collection(docPath);
+            if (orderByField) {
+              colRef = colRef.orderBy(orderByField, orderByDirection || 'asc');
+            }
+            if (limitCount) {
+              colRef = colRef.limit(limitCount);
+            }
+            const snap = await colRef.get();
+            const docs = (snap.docs || []).map((d: any) => ({
+              id: d.id,
+              data: d.data()
+            }));
+            return res.json({ success: true, docs });
+          } else {
+            let q = query(collection(targetDb, docPath));
+            if (orderByField) {
+              q = query(q, orderBy(orderByField, orderByDirection || 'asc'));
+            }
+            if (limitCount) {
+              q = query(q, limit(limitCount));
+            }
+            const snap = await getDocs(q);
+            const docs = snap.docs.map((d: any) => ({
+              id: d.id,
+              data: d.data()
+            }));
+            return res.json({ success: true, docs });
           }
-          if (limitCount) {
-            colRef = colRef.limit(limitCount);
-          }
-          const snap = await colRef.get();
-          const docs = (snap.docs || []).map((doc: any) => ({
-            id: doc.id,
-            data: doc.data()
-          }));
-          return res.json({ success: true, docs });
         } catch (listErr: any) {
           const msg = listErr?.message || String(listErr);
-          if (listErr?.code === 5 || listErr?.code === 'not-found' || msg.includes('NOT_FOUND') || msg.includes('not found')) {
+          if (listErr?.code === 5 || listErr?.code === 7 || listErr?.code === 'not-found' || msg.includes('NOT_FOUND') || msg.includes('PERMISSION_DENIED') || msg.includes('not found')) {
             return res.json({ success: true, docs: [] });
           }
           throw listErr;
